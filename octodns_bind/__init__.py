@@ -54,6 +54,8 @@ class RfcPopulate:
             'SSHFP',
             'TLSA',
             'TXT',
+            'DNAME',
+            'WR',
         )
     )
 
