@@ -27,7 +27,6 @@ try:  # pragma: no cover
     from datetime import UTC
 except ImportError:  # pragma: no cover
     from datetime import timedelta, timezone
-
     UTC = timezone(timedelta())
 
 # TODO: remove __VERSION__ with the next major version release
@@ -59,22 +58,15 @@ class RfcPopulate:
     )
 
     def populate(self, zone, target=False, lenient=False):
-        self.log.debug(
-            'populate: name=%s, target=%s, lenient=%s',
-            zone.name,
-            target,
-            lenient,
-        )
+        self.log.debug('populate: name=%s, target=%s, lenient=%s',
+            zone.decoded_name, target, lenient)
 
         before = len(zone.records)
         rrs = self.zone_records(zone, target=target)
         for record in Record.from_rrs(zone, rrs, lenient=lenient):
             zone.add_record(record, lenient=lenient)
 
-        self.log.info(
-            'populate:   found %s records', len(zone.records) - before
-        )
-
+        self.log.info('populate:   found %s records', len(zone.records) - before)
         return self.zone_exists(zone, target)
 
 
@@ -136,34 +128,19 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
         nxdomain: 3600
     '''
 
-    def __init__(
-        self,
-        id,
-        directory,
-        file_extension='.',
-        check_origin=True,
-        hostmaster_email='webmaster',
-        default_ttl=3600,
-        refresh=3600,
-        retry=600,
-        expire=604800,
-        nxdomain=3600,
+    def __init__(self, id, directory, file_extension='.',
+        check_origin=True, default_ttl=3600,
+        primary_nameserver='ns', hostmaster_email='webmaster', serial=0,
+        refresh=10800, retry=3600, expire=604800, nxdomain=60,
+        apply_disabled=False, strict_supports=True,
     ):
-        self.log = getLogger(f'ZoneFileProvider[{id}]')
-        self.log.debug(
-            '__init__: id=%s, directory=%s, file_extension=%s, check_origin=%s, hostmaster_email=%s, default_ttl=%d, refresh=%d, retry=%d, expire=%d, nxdomain=%d',
-            id,
-            directory,
-            file_extension,
-            check_origin,
-            hostmaster_email,
-            default_ttl,
-            refresh,
-            retry,
-            expire,
-            nxdomain,
-        )
-        super().__init__(id)
+        self.log = getLogger(f'{self.__class__.__name__}[{id}]')
+        self.log.debug(f'__init__: id={id}, directory={directory}, file_extension={file_extension}, check_origin={check_origin}, default_ttl={default_ttl}, '
+            f'primary_nameserver={primary_nameserver} hostmaster_email={hostmaster_email}, refresh={refresh}, retry={retry}, expire={expire}, nxdomain={nxdomain}, '
+            f'apply_disabled={apply_disabled}, strict_supports={strict_supports}')
+
+        super().__init__(id, apply_disabled=apply_disabled, strict_supports=strict_supports)
+
         self.directory = directory
         self.file_extension = file_extension
         self.check_origin = check_origin
@@ -334,6 +311,7 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
             '_apply: zone=%s, num_records=%d', name, len(plan.changes)
         )
 
+        self.log.debug('_apply: zone=%s, num_records=%d', zone_name, len(records))
         return True
 
 
@@ -350,30 +328,12 @@ class AxfrSourceZoneTransferFailed(AxfrSourceException):
 
 
 class AxfrPopulate(RfcPopulate):
-    def __init__(
-        self,
-        id,
-        host,
-        port=53,
-        ipv6=False,
-        timeout=15,
-        key_name=None,
-        key_secret=None,
-        key_algorithm=None,
-    ):
+    def __init__( self, id, host, port=53, ipv6=False, timeout=15, key_name=None, key_secret=None, key_algorithm=None, **kw):
         self.log = getLogger(f'{self.__class__.__name__}[{id}]')
-        self.log.debug(
-            '__init__: id=%s, host=%s, port=%d, ipv6=%s, timeout=%d, key_name=%s, key_secret=%s, key_algorithm=%s',
-            id,
-            host,
-            port,
-            ipv6,
-            timeout,
-            key_name,
-            key_secret is not None,
-            key_algorithm is not None,
-        )
-        super().__init__(id)
+        self.log.debug(f'__init__: id={id}, port={port}, ipv6={ipv6}, timeout={timeout}, '
+            f'key_name={key_name} key_secret={key_secret}, key_algorithm={key_algorithm}')
+
+        super().__init__(id, **kw)
         self.host = self._host(host, ipv6)
         self.port = int(port)
         self.ipv6 = ipv6
@@ -486,9 +446,7 @@ class Rfc2136Provider(AxfrPopulate, BaseProvider):
         if r.rcode() != dns.rcode.NOERROR:
             raise Rfc2136ProviderUpdateFailed(dns.rcode.to_text(r.rcode()))
 
-        self.log.debug(
-            '_apply: zone=%s, num_records=%d', name, len(plan.changes)
-        )
+        self.log.debug('_apply: zone=%s, num_records=%d', name, len(plan.changes))
 
         return True
 
