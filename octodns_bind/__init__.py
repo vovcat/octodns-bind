@@ -62,12 +62,12 @@ class RfcPopulate:
             zone.decoded_name, target, lenient)
 
         before = len(zone.records)
-        rrs = self.zone_records(zone, target=target)
+        rrs = self.zone_records(zone.name, target=target)
         for record in Record.from_rrs(zone, rrs, lenient=lenient):
             zone.add_record(record, lenient=lenient)
 
         self.log.info('populate:   found %s records', len(zone.records) - before)
-        return self.zone_exists(zone, target)
+        return self.zone_exists(zone.name, target)
 
 
 class ZoneFileSourceException(Exception):
@@ -160,6 +160,7 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
         self.expire = expire
         self.nxdomain = nxdomain
 
+        self._zone_soa = {}
         self._zone_records = {}
 
     def list_zones(self):
@@ -194,31 +195,75 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
 
         return z
 
-    def zone_exists(self, zone, target=False):
-        if target:
-            # When acting as a target we ignore any existing records so that we
-            # create a completely new copy
-            return False
+    def zone_path(self, zone_name):
+         zone_filename =  f'{zone_name[:-1]}{self.file_extension}'
+         return join(self.directory, zone_filename)
 
-        zone_filename = f'{zone.name[:-1]}{self.file_extension}'
-        return exists(join(self.directory, zone_filename))
+    def zone_exists(self, zone_name, target=False):
+        return exists(self.zone_path(zone_name))
 
-    def zone_records(self, zone, target):
-        if zone.name not in self._zone_records:
-            z = self._load_zone_file(zone.name, target)
+    def encode_email(self, email, zone_name=''):
+        # escape any .'s in the email username
+        pieces = email.split('@')
+        pieces[0] = pieces[0].replace('.', '\\.')
+        if len(pieces) == 2: return f'{pieces[0]}.{pieces[1]}'
+        return f'{pieces[0]}.{zone_name}'
 
-            records = []
-            if z:
-                for name, ttl, rdata in z.iterate_rdatas():
-                    rdtype = dns.rdatatype.to_text(rdata.rdtype)
-                    if rdtype in self.SUPPORTS:
-                        records.append(
-                            Rr(name.to_text(), rdtype, ttl, rdata.to_text())
-                        )
+    def decode_email(self, encoded_email):
+        email = encoded_email.replace(r'\.', '\n').replace('.', '@', 1).replace('\n', '.')
+        self.log.debug(f'decode_email: {encoded_email!r} -> {email!r}')
+        return email
 
-            self._zone_records[zone.name] = records
+    def zone_records(self, zone_name, target):
+        self.log.debug(f'zone_records: {zone_name} target={target}')
 
-        return self._zone_records[zone.name]
+        if records := self._zone_records.get(zone_name):
+            return records
+
+        records = []
+        soa = {
+            'zone_name': zone_name,
+            'default_ttl': self.default_ttl,
+            'primary_nameserver': '',
+            'hostmaster_email': '',
+            'serial': self._serial(),
+            'refresh': self.refresh,
+            'retry': self.retry,
+            'expire': self.expire,
+            'nxdomain': self.nxdomain,
+        }
+
+        if dns_zone := self._load_zone_file(zone_name, target):
+            for name, ttl, rdata in dns_zone.iterate_rdatas():
+                rdtype = dns.rdatatype.to_text(rdata.rdtype)
+
+                if str(name) == zone_name and rdtype == 'SOA':
+                    self.log.debug(f'zone_records: {name} {ttl} SOA mname={rdata.mname} rname={rdata.rname} serial={rdata.serial} refresh={rdata.refresh} retry={rdata.retry} expire={rdata.expire} minimum={rdata.minimum}')
+                    soa.update({
+                        'default_ttl': ttl,
+                        'primary_nameserver': str(rdata.mname),
+                        'hostmaster_email': self.decode_email(str(rdata.rname)),
+                        'serial': rdata.serial,
+                        'refresh': rdata.refresh,
+                        'retry': rdata.retry,
+                        'expire': rdata.expire,
+                        'nxdomain': rdata.minimum
+                    })
+                    continue
+
+                if rdtype not in self.SUPPORTS:
+                    self.log.warning(f'zone_records: skipping {name} {ttl} {rdata!r}')
+                    continue
+
+                records.append(Rr(name.to_text(), rdtype, ttl, rdata.to_text()))
+
+        self._zone_records[zone_name] = records
+        self._zone_soa[zone_name] = soa
+        return records
+
+    def zone_soa(self, zone_name, target):
+        rrs = self.zone_records(zone_name, target)
+        return self._zone_soa[zone_name]
 
     def _primary_nameserver(self, decoded_name, records):
         for record in records:
@@ -378,17 +423,17 @@ class AxfrPopulate(RfcPopulate):
             params['keyalgorithm'] = self.key_algorithm
         return params
 
-    def zone_exists(self, zone, target=False):
+    def zone_exists(self, zone_name, target=False):
         # We can't create them so they have to already exist
         return True
 
-    def zone_records(self, zone, target):
+    def zone_records(self, zone_name, target):
         auth_params = self._auth_params()
         try:
-            z = dns.zone.from_xfr(
+            dns_zone = dns.zone.from_xfr(
                 dns.query.xfr(
                     self.host,
-                    zone.name,
+                    zone_name,
                     port=self.port,
                     timeout=self.timeout,
                     lifetime=self.timeout,
@@ -402,7 +447,7 @@ class AxfrPopulate(RfcPopulate):
 
         records = []
 
-        for name, ttl, rdata in z.iterate_rdatas():
+        for name, ttl, rdata in dns_zone.iterate_rdatas():
             rdtype = dns.rdatatype.to_text(rdata.rdtype)
             if rdtype in self.SUPPORTS:
                 records.append(Rr(name.to_text(), rdtype, ttl, rdata.to_text()))
