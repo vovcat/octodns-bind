@@ -143,15 +143,17 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
         check_origin=True, default_ttl=3600,
         primary_nameserver='ns', hostmaster_email='webmaster', serial=0,
         refresh=10800, retry=3600, expire=604800, nxdomain=60,
-        apply_disabled=False, strict_supports=True,
+        apply_disabled=False, strict_supports=True, supports_root_ns=True, supports_alias=False,
     ):
         self.log = getLogger(f'{self.__class__.__name__}[{id}]')
         self.log.debug(f'__init__: id={id}, directory={directory}, file_extension={file_extension}, check_origin={check_origin}, default_ttl={default_ttl}, '
             f'primary_nameserver={primary_nameserver} hostmaster_email={hostmaster_email}, refresh={refresh}, retry={retry}, expire={expire}, nxdomain={nxdomain}, '
-            f'apply_disabled={apply_disabled}, strict_supports={strict_supports}')
+            f'apply_disabled={apply_disabled}, strict_supports={strict_supports} supports_root_ns={supports_root_ns} supports_alias={supports_alias}')
 
         super().__init__(id, apply_disabled=apply_disabled, strict_supports=strict_supports)
 
+        self.SUPPORTS_ROOT_NS = supports_root_ns
+        if supports_alias: self.SUPPORTS = self.SUPPORTS | {'ALIAS'}
         self.directory = directory
         self.file_extension = file_extension
         self.check_origin = check_origin
