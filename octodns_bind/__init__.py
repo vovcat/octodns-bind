@@ -270,38 +270,6 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
         rrs = self.zone_records(zone_name, target)
         return self._zone_soa[zone_name]
 
-    def _primary_nameserver(self, decoded_name, records):
-        for record in records:
-            if record.name == '' and record._type == 'NS':
-                return record.values[0]
-        self.log.warning(
-            '_primary_nameserver: unable to find a primary_nameserver for %s, using placeholder',
-            decoded_name,
-        )
-        return f'ns.{decoded_name}'
-
-    def _hostmaster_email(self, decoded_name):
-        pieces = self.hostmaster_email.split('@')
-        # escape any .'s in the email username
-        pieces[0] = pieces[0].replace('.', '\\.')
-        if len(pieces) == 2:
-            return '.'.join(pieces)
-
-        return f'{pieces[0]}.{decoded_name}'
-
-    def _longest_name(self, records):
-        try:
-            return sorted(len(r.name) for r in records)[-1]
-        except IndexError:
-            return 0
-
-    def _now(self):
-        return datetime.now(UTC)
-
-    def _serial(self):
-        # things wrap/reset at max int
-        return int(self._now().timestamp()) % 2147483647
-
     def update_primary_nameserver(self, soa):
         zone_name = soa['zone_name']
         if primary_nameserver := soa['primary_nameserver']:
@@ -351,7 +319,6 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
 
         desired = plan.desired
         zone_name = desired.name
-        longest_name = self._longest_name(desired.records)
 
         soa = self.zone_soa(zone_name, target=True)
         self.update_primary_nameserver(soa)
