@@ -176,29 +176,26 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
                 if n: filename = filename[:-n]
                 yield idna_decode(filename) + '.'
 
-    def _load_zone_file(self, zone_name, target):
-        if target:
-            # if we're in target mode we assume nothing exists b/c we recreate
-            # everything every time, similar to YamlProvider
-            return None
+    def load_zone_file(self, zone_name, target):
+        self.log.debug(f'load_zone_file: {zone_name} target={target}')
 
-        zone_filename = f'{zone_name[:-1]}{self.file_extension}'
-        zonefiles = listdir(self.directory)
-        path = join(self.directory, zone_filename)
-        if zone_filename in zonefiles:
+        if self.zone_exists(zone_name):
             try:
-                z = dns.zone.from_file(
-                    path,
+                return dns.zone.from_file(
+                    self.zone_path(zone_name),
                     zone_name,
                     relativize=False,
                     check_origin=self.check_origin,
                 )
             except DNSException as error:
                 raise ZoneFileSourceLoadFailure(error)
-        else:
-            raise ZoneFileSourceNotFound(path)
 
-        return z
+        # If zone doesn't exist and we're in target mode, return nothing
+        if target:
+            return None
+
+        # Else something bad happened.
+        raise ZoneFileSourceNotFound(self.zone_path(zone_name))
 
     def zone_path(self, zone_name):
          zone_filename =  f'{zone_name[:-1]}{self.file_extension}'
@@ -238,7 +235,7 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
             'nxdomain': self.nxdomain,
         }
 
-        if dns_zone := self._load_zone_file(zone_name, target):
+        if dns_zone := self.load_zone_file(zone_name, target):
             for name, ttl, rdata in dns_zone.iterate_rdatas():
                 rdtype = dns.rdatatype.to_text(rdata.rdtype)
 
