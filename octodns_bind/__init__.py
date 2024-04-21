@@ -159,8 +159,11 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
         self.directory = directory
         self.file_extension = file_extension
         self.check_origin = check_origin
-        self.hostmaster_email = hostmaster_email
         self.default_ttl = default_ttl
+
+        self.primary_nameserver = primary_nameserver
+        self.hostmaster_email = hostmaster_email
+        self.serial = serial
         self.refresh = refresh
         self.retry = retry
         self.expire = expire
@@ -228,7 +231,7 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
             'default_ttl': self.default_ttl,
             'primary_nameserver': '',
             'hostmaster_email': '',
-            'serial': self._serial(),
+            'serial': self.serial,
             'refresh': self.refresh,
             'retry': self.retry,
             'expire': self.expire,
@@ -299,73 +302,100 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
         # things wrap/reset at max int
         return int(self._now().timestamp()) % 2147483647
 
+    def update_primary_nameserver(self, soa):
+        zone_name = soa['zone_name']
+        if primary_nameserver := soa['primary_nameserver']:
+            return
+
+        for record in self._zone_records[zone_name]:
+            if record.name == '' and record._type == 'NS':
+                self.log.debug(f'update_primary_nameserver: {record.name} {record._type} {record.values[0]}')
+                primary_nameserver = record.values[0]
+
+        if not primary_nameserver:
+            self.log.debug(f'update_primary_nameserver: unable to find a primary for {zone_name}, using {self.primary_nameserver!r}')
+            if self.primary_nameserver[-1:] == '.': primary_nameserver = self.primary_nameserver
+            else: primary_nameserver = f'{self.primary_nameserver}.{zone_name}'
+
+        self.log.debug(f'update_primary_nameserver: changed to {primary_nameserver!r}')
+        soa['primary_nameserver'] = primary_nameserver
+
+    def update_hostmaster_email(self, soa):
+        zone_name = soa['zone_name']
+        if hostmaster_email := soa['hostmaster_email']:
+            return
+
+        pieces = self.hostmaster_email.split('@')
+        if len(pieces) == 2: hostmaster_email = f'{pieces[0]}@{pieces[1]}'
+        else: hostmaster_email = f'{pieces[0]}@{zone_name}'
+
+        self.log.debug(f'update_hostmaster_email: changed to {hostmaster_email!r}')
+        soa['hostmaster_email'] = hostmaster_email
+
+    def update_serial(self, soa):
+        zone_name = soa['zone_name']
+        serial = old_serial = soa['serial']
+
+        new_serial = int(datetime.now(UTC).strftime('%Y%m%d00'))
+        if new_serial > serial: serial = new_serial
+        serial += 1
+
+        self.log.debug(f'update_serial: {old_serial} -> {serial}, {zone_name}')
+        soa['serial'] = serial
+
     def _apply(self, plan):
-        desired = plan.desired
-        name = desired.decoded_name
+        self.log.debug('_apply: plan=%s, nchanges=%d', plan, len(plan.changes))
 
         if not isdir(self.directory):
             makedirs(self.directory)
 
-        records = sorted(c.record for c in plan.changes)
-        longest_name = self._longest_name(records)
+        desired = plan.desired
+        zone_name = desired.name
+        longest_name = self._longest_name(desired.records)
 
-        filename = join(self.directory, f'{name[:-1]}{self.file_extension}')
-        with open(filename, 'w') as fh:
-            template = Template(
-                '''$$ORIGIN $zone_name
+        soa = self.zone_soa(zone_name, target=True)
+        self.update_primary_nameserver(soa)
+        self.update_hostmaster_email(soa)
+        self.update_serial(soa)
 
-@ $default_ttl IN SOA $primary_nameserver $hostmaster_email (
-    $serial ; Serial
-    $refresh ; Refresh
-    $retry ; Retry
-    $expire ; Expire
-    $nxdomain ; NXDOMAIN ttl
-)
+        with open(self.zone_path(zone_name), 'w') as fh:
+            template = '''
+$ORIGIN	{zone_name}	; {decoded_name}
+$TTL	{default_ttl}
+@	{default_ttl}	SOA	{primary_nameserver} {hostmaster_email_enc} (
+\t\t	{serial} {refresh} {retry} {expire} {nxdomain} )\t; serial refresh retry expire negttl
+            '''.strip() + '\n\n'
 
-'''
-            )
-
-            primary_nameserver = self._primary_nameserver(name, records)
-            fh.write(
-                template.substitute(
-                    {
-                        'hostmaster_email': self._hostmaster_email(name),
-                        'serial': self._serial(),
-                        'zone_name': name,
-                        'default_ttl': self.default_ttl,
-                        'primary_nameserver': primary_nameserver,
-                        'refresh': self.refresh,
-                        'retry': self.retry,
-                        'expire': self.expire,
-                        'nxdomain': self.nxdomain,
-                    }
-                )
-            )
+            fh.write(template.format(** soa | {
+                'hostmaster_email_enc': self.encode_email(soa['hostmaster_email'], soa['zone_name']),
+                'decoded_name': desired.decoded_name,
+            }))
 
             prev_name = None
+            records = sorted(desired.records)
             for record in records:
+                if record.ignored:
+                    self.log.debug('_apply:  skipping record=%s %s - %s ignored', record.fqdn, record._type, self.id)
+                    continue
+                elif len(record.included) > 0 and self.id not in record.included:
+                    self.log.debug('_apply:  skipping record=%s %s - %s not included', record.fqdn, record._type, self.id)
+                    continue
+                elif self.id in record.excluded:
+                    self.log.debug('_apply:  skipping record=%s %s - %s excluded', record.fqdn, record._type, self.id)
+                    continue
+
                 try:
-                    values = record.values
+                    values = record.rr_values
                 except AttributeError:
                     values = [record.value]
-                for value in values:
-                    value = value.rdata_text
-                    if record._type in ('SPF', 'TXT'):
-                        # TXT values need to be quoted
-                        value = value.replace('"', '\\"')
-                        value = f'"{value}"'
-                    name = '@' if record.name == '' else record.name
-                    if name == prev_name:
-                        name = ''
-                    else:
-                        prev_name = name
-                    fh.write(
-                        f'{name:<{longest_name}} {record.ttl:8d} IN {record._type:<8} {value}\n'
-                    )
 
-        self.log.debug(
-            '_apply: zone=%s, num_records=%d', name, len(plan.changes)
-        )
+                self.log.debug(f'_apply: record {record.name} {record._type} {values} {record.included}')
+                for value in values:
+                    name = record.name
+                    if name == prev_name: name = ''
+                    else: prev_name = name
+                    comment = '\t; %s' % record.octodns['comment'] if 'comment' in record.octodns else ''
+                    fh.write(f'{name:<23} {record.ttl:<6d} {record._type:<8} {value.rdata_text}{comment}\n')
 
         self.log.debug('_apply: zone=%s, num_records=%d', zone_name, len(records))
         return True
