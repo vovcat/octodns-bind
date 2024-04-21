@@ -110,6 +110,16 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
         # (default: true)
         check_origin: true
 
+        # The details of the SOA record can be customized when creating
+        # zonefiles with the following options.
+        default_ttl: 3600
+
+        # Primary name server name or FQDN (ending with a dot) for zones
+        # without a SOA record (new zones). If this name does not end with a
+        # dot, the current zone name will be appended to this value.
+        # (default: ns)
+        primary_nameserver: ns
+
         # The email username or full address to be used when creating zonefiles.
         # If this is just a username, no @[domain.com.], the current zone name
         # will be appended to this value. If the value is a complete email
@@ -119,9 +129,8 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
         # (default: webmaster)
         hostmaster_email: webmaster
 
-        # The details of the SOA record can be customized when creating
-        # zonefiles with the following options.
-        default_ttl: 3600
+        # The rest of the default SOA record
+        serial: 0
         refresh: 3600
         retry: 600
         expire: 604800
