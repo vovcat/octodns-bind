@@ -21,6 +21,8 @@ from dns.update import Update as DnsUpdate
 from octodns.provider.base import BaseProvider
 from octodns.record import Create, Record, Rr, Update
 from octodns.source.base import BaseSource
+from octodns.idna import IdnaDict, idna_decode, idna_encode
+
 
 # TODO: remove once we require python >= 3.11
 try:  # pragma: no cover
@@ -171,9 +173,8 @@ class ZoneFileProvider(RfcPopulate, BaseProvider):
         n = len(self.file_extension)
         for filename in sorted(listdir(self.directory)):
             if filename.endswith(self.file_extension):
-                if n > 0:
-                    filename = filename[:-n]
-                yield f'{filename}.'
+                if n: filename = filename[:-n]
+                yield idna_decode(filename) + '.'
 
     def _load_zone_file(self, zone_name, target):
         if target:
